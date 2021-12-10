@@ -1,8 +1,7 @@
 package com.example.volleyball00;
 
-import androidx.annotation.Nullable;
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
+import static com.example.volleyball00.Constants.MODEL_HEIGHT;
+import static com.example.volleyball00.Constants.MODEL_WIDTH;
 
 import android.Manifest;
 import android.app.Activity;
@@ -19,13 +18,16 @@ import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
-import android.text.TextUtils;
 import android.util.Log;
 import android.util.Pair;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
+
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
 
 import org.json.JSONObject;
 
@@ -42,34 +44,18 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import okhttp3.MediaType;
-import okhttp3.MultipartBody;
-import okhttp3.OkHttpClient;
-import okhttp3.RequestBody;
-import okhttp3.ResponseBody;
-import retrofit2.Call;
-import retrofit2.Callback;
-import retrofit2.Response;
-import retrofit2.Retrofit;
-
-import static com.example.volleyball00.Constants.MODEL_HEIGHT;
-import static com.example.volleyball00.Constants.MODEL_WIDTH;
 
 
-public class MainActivity extends AppCompatActivity {
+public class LocalEstimation extends AppCompatActivity {
 
     private int RESULT_LOAD_FILE = 1;
     private int NUM_KEYFRAMES = 5;
     private TextView textViewFileName;
     private ImageView imageViewKeyFrame;
     Boolean estimationDisplayed = false;
-    private String videoPath = ""; //ruta del video que se enviara al api
-        private String baseUrl = "http://127.0.0.1:6008/";
-//    private String baseUrl = "http://10.0.2.2:6008/";
+    private String imagePath = ""; //ruta de la imagen a la que se estimara la pose
 
-    private BinaryApi binApi;
 
-    private String[] phasesFileNames = new String[NUM_KEYFRAMES];
     private int currentPhase = 0; //current phase/keyframe for the selector
     private TextView textViewCurKeyFrame;
     private Instant startTimeRequest;
@@ -92,32 +78,14 @@ public class MainActivity extends AppCompatActivity {
 
 
 
-
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
+        setContentView(R.layout.activity_local);
         textViewFileName = findViewById(R.id.textViewFileName);
         imageViewKeyFrame = findViewById(R.id.imageView);
-        textViewCurKeyFrame = findViewById(R.id.textViewCurrKeyFrame);
-        textViewCurKeyFrame.setText("0/"+NUM_KEYFRAMES); //shows 0/TOT initially
         checkRequestStoragePermission(this); //solicitamos permiso para usar almacenamiento
-
-        //levantamos el cliente "binApi" para consumir APIs
-        OkHttpClient okHttpClient = new OkHttpClient
-                .Builder()
-                .connectTimeout(400, TimeUnit.MINUTES)
-                .readTimeout(400, TimeUnit.SECONDS)
-                .writeTimeout(400, TimeUnit.SECONDS)
-                .build();
-        Retrofit retrofitbin = new Retrofit.Builder()
-                .baseUrl(baseUrl)
-                .client(okHttpClient)
-                .build();
-
-        binApi = retrofitbin.create(BinaryApi.class);
 
 
         //inicializacion para estim de pose
@@ -128,16 +96,32 @@ public class MainActivity extends AppCompatActivity {
         initBodyJoints();
 
         //Log.i("cachedir",getApplicationContext().getCacheDir().toString()); //"/data/user/0/com.example.volleyball00/cache"
-
-        //boton para probar procesamiento local
-        Button btnNavLocal =(Button)findViewById(R.id.buttonGoLocal);
-        btnNavLocal.setOnClickListener(new View.OnClickListener() {
+        //boton para regresar al procesamiento por servidor con requests
+        Button btnNavServer =(Button)findViewById(R.id.buttonGoServer);
+        btnNavServer.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                Intent intent = new Intent(MainActivity.this, LocalEstimation.class);
+                Intent intent = new Intent(LocalEstimation.this, MainActivity.class);
                 startActivity(intent);
             }
         });
+
+        Button btnBrowse = (Button)findViewById(R.id.buttonBrowse);
+        btnBrowse.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                browseImage(v);
+            }
+        });
+
+        Button btnPredict = (Button)findViewById(R.id.buttonPredict);
+        btnPredict.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startSingleFrameProcess(v);
+            }
+        });
+
     }
 
     private void initBodyJoints(){
@@ -163,6 +147,12 @@ public class MainActivity extends AppCompatActivity {
                 MediaStore.Video.Media.EXTERNAL_CONTENT_URI);
         startActivityForResult(intent, RESULT_LOAD_FILE);
     }
+    //Funcion onClick. Se activa al dar tap al boton de explorar
+    public void browseImage(View v){
+        Intent intent = new Intent(Intent.ACTION_PICK,
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+        startActivityForResult(intent, RESULT_LOAD_FILE);
+    }
 
     //Funcion onClick. Se activa al dar tap al boton de Obtener Keyframes
     public void startKeyFramesProcess(View v){
@@ -170,13 +160,7 @@ public class MainActivity extends AppCompatActivity {
         //parte 1: splitVideo
         //por el momento se llamara a la estimacion de pose tambien desde
         //requestSplitVideo debido a que aun no se manejar paralelismo en android
-        if (!videoPath.trim().isEmpty()){
-            startTimeRequest = Instant.now();
 
-            requestSplitVideo(videoPath);
-        }
-        else
-            Log.i("tapKeyFrame","attempt to call process before selecting video");
 
         ////parte 2: estimacion de pose
 
@@ -187,74 +171,39 @@ public class MainActivity extends AppCompatActivity {
 //        requestSingleImage("image_00011.jpg", 0, true);
     }
 
-    //Funcion onClick. Se activa al dar tap al boton "derecha".
-    public void displayNextKeyFrame(View v){
-        if (!estimationDisplayed) //won't show
-            return;
 
-        if (currentPhase + 1 >= NUM_KEYFRAMES)
-            return;
 
-        currentPhase++;
-        updateTextKeyFrame();
-        //se asume estimacion de pose realizada:
-        String keyframePath = getApplicationContext().getCacheDir()
-                + File.separator
-                + "estimation__"
-                + phasesFileNames[currentPhase];
 
-        drawImageFromPath(keyframePath);
 
-    }
-
-    public void displayPreviousKeyFrame(View v){
-        if (!estimationDisplayed) //won't show
-            return;
-
-        if (currentPhase - 1 < 0)
-            return;
-
-        currentPhase--;
-        updateTextKeyFrame();
-        //se asume estimacion de pose realizada:
-        String keyframePath = getApplicationContext().getCacheDir()
-                + File.separator
-                + "estimation__"
-                + phasesFileNames[currentPhase];
-
-        drawImageFromPath(keyframePath);
-
-    }
-
-    public void updateTextKeyFrame(){
-        textViewCurKeyFrame.setText((currentPhase+1)+"/"+NUM_KEYFRAMES);
-    }
-
-    //funcion llamada del startActivityForResult de browseVideo
+    //funcion llamada del startActivityForResult de browseVideo browseImage
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
         //from browseVideo
         if (requestCode == RESULT_LOAD_FILE && resultCode == RESULT_OK && null != data) {
-            videoPath = getVideoPath(data);
-            Log.i("videoPath", "selected video: " + videoPath);
-
+            imagePath = getImagePath(data);
+            Log.i("videoPath", "selected video: " + imagePath);
+            Log.i("onActivityResult", "imagepath: " + imagePath);
             //reducimos el texto a mostrar:
             int maxchars = 38;
-            int start = videoPath.length() - maxchars;
-            String showtext = "..."+videoPath.substring(start, videoPath.length());
+            int start = imagePath.length() - maxchars;
+            String showtext = "..."+imagePath.substring(start, imagePath.length());
 
             textViewFileName.setText(showtext);
+
+            //dibujamos imagen cargada
+            drawImageFromPath(imagePath);
         }
     }
 
     //funciones para segmentacion: envio de video, ruta de video
     //
-    private  String getVideoPath( Intent data){
-        Uri selectedVideo = data.getData();
-        String[] filePathColumn = {MediaStore.Video.Media.DATA};
-        Cursor cursor = getContentResolver().query(selectedVideo,
+
+    private  String getImagePath( Intent data){
+        Uri selectedImage = data.getData();
+        String[] filePathColumn = {MediaStore.Images.Media.DATA};
+        Cursor cursor = getContentResolver().query(selectedImage,
                 filePathColumn, null, null, null);
         cursor.moveToFirst();
         int columnIndex = cursor.getColumnIndex(filePathColumn[0]);
@@ -264,70 +213,41 @@ public class MainActivity extends AppCompatActivity {
         return filePath;
     }
 
-    //por el momento, esta funcion se encargara de lo siguiente:
-    //llamar al api de splitVideo
-    //por cada imagen de fase:
-    //   llamar requestSingleImage  //esto guardara la imagen orig, estimara la pose y guardara la nueva img
-    private void requestSplitVideo(String path){
+    //Funcion onClick. Se activa al dar tap al boton "Obtener Keyframes".
+    public void startSingleFrameProcess(View v){
+        //estimamos pose:
+        if (!imagePath.trim().isEmpty()) {
 
-        //preparamos el video para enviar
-        File file = new File(path);
-        RequestBody requestFile = RequestBody.create(MediaType.parse("multipart/form-data"),file);
-        MultipartBody.Part body =
-                MultipartBody.Part.createFormData("video", file.getName(), requestFile);
+            String path = imagePath;
+
+            startTimeRequest = Instant.now(); //:deb:
 
 
-        Call<ResponseBody> call = binApi.splitVideo(body);
-        call.enqueue(new Callback<ResponseBody>() {
-            @Override
-            public void onResponse(Call<ResponseBody> call, Response<ResponseBody> response) {
-                if (response.isSuccessful()){
-                    try{
-                        String responseStr = response.body().string();
-                        Instant endTime = Instant.now();
-                        Log.i("responseStr:",responseStr);
-                        Log.i("responseStr:", "time: " + (Duration.between( startTimeRequest,endTime)));
-                        JSONObject jsonResponse = new JSONObject(responseStr);
-                        List<String> sortedKeys = jsonStringSortedKeys(responseStr);
+            Bitmap bmp = BitmapFactory.decodeFile(path);
 
 
-                        int ix = 0;
-                        for (String key : sortedKeys){
-                            Object value = jsonResponse.get(key);
-                            if (!(value instanceof  JSONObject)){
-                                String valueStr = value.toString();
-                                phasesFileNames[ix] = valueStr;
-
-                                //llamamos a la obtencion de imagen y estimacion de pose
-                                //lo hacemos desde aqui debido a que no manejo paralelismo
-                                requestSingleImage(valueStr, ix, true);
-                                ix++;
-                            }
-                        }
-
-                    }
-                    catch (Exception e) {
-                        Log.e("responseStr","sth failed: " + e.getMessage());
-                        Log.e("response", response.toString());
-                    }
-                }
-                else{
-                    Log.e("response","sth failed: " + response.code());
-                    Log.e("response", response.toString());
-                    Log.e("call", call.toString());
-                }
+            Log.i("singleFrameProcess", "calling preprocessing and estimating pose");
+            Bitmap bitmapSkeleton = processImage(bmp);
+            //save drawn skeleton:
+            try {
+                bitmapToFile(bitmapSkeleton, "latest.jpg");
+            } catch (Exception e) {
+                Log.e("saveImage", "sth failed: " + e.getMessage());
             }
 
-            @Override
-            public void onFailure(Call<ResponseBody> call, Throwable t) {
-                Log.e("call", "an error ocurred during call to splitVideo:");
-                Log.e("call", call.toString());
-                Log.e("error", t.toString());
 
-            }
-        });
+            imageViewKeyFrame.setImageBitmap(bitmapSkeleton);
+            estimationDisplayed = true;
+            Log.i("response+pose:", "time: " + (Duration.between(startTimeRequest, Instant.now())));
+        }
+        else
+            Log.i("tapEstimate","attempt to call process before selecting video");
+
+
 
     }
+
+
 
     public static List<String> jsonStringSortedKeys(String jsonStringObj) throws Exception{
         JSONObject jsonResponse = new JSONObject(jsonStringObj);
@@ -346,63 +266,6 @@ public class MainActivity extends AppCompatActivity {
     public void drawImageFromPath(String filePath){
         Bitmap bitmap = BitmapFactory.decodeFile(filePath);
         imageViewKeyFrame.setImageBitmap(bitmap);
-    }
-
-    private void requestSingleImage(String imgName, Integer ixPhase, Boolean estimatePose){
-        Call<ResponseBody> call = binApi.getImage(imgName);
-        call.enqueue(new Callback<ResponseBody>() {
-            @Override
-            public void onResponse(Call<ResponseBody> call, Response<ResponseBody> response) {
-                if (response.isSuccessful()){
-
-                    //recibimos imagen original:
-                    Bitmap bmp = BitmapFactory.decodeStream(response.body().byteStream());
-                    if (ixPhase == 0 && !estimatePose){
-                        currentPhase = 0;
-                        updateTextKeyFrame();
-                        imageViewKeyFrame.setImageBitmap(bmp);
-                    }
-
-                    //save frame
-                    try{
-                        bitmapToFile(bmp, imgName);
-                    }catch (Exception e){
-                        Log.e("saveImage","sth failed: " + e.getMessage());
-                    }
-
-                    //estimamos pose:
-
-                    if (estimatePose){
-                        Log.i("processImage","calling preprocessing and estimating pose for keyframe " + ixPhase);
-                        Bitmap  bitmapSkeleton = processImage(bmp);
-                        //save drawn skeleton:
-                        try{
-                            bitmapToFile(bitmapSkeleton, "estimation__" + imgName);
-                        }catch (Exception e){
-                            Log.e("saveImage","sth failed: " + e.getMessage());
-                        }
-                        if (ixPhase == 0){ //only the first phase is displayed
-                            currentPhase = 0;
-                            updateTextKeyFrame();
-                            imageViewKeyFrame.setImageBitmap(bitmapSkeleton);
-                            estimationDisplayed = true;
-                            Log.i("response+pose:", "time: " + (Duration.between( startTimeRequest,Instant.now())));
-                        }
-
-                    }
-
-                }
-                else{
-                    Log.e("response","sth failed: " + response.code());
-                }
-            }
-
-            @Override
-            public void onFailure(Call<ResponseBody> call, Throwable t) {
-
-            }
-        });
-
     }
 
 
@@ -477,8 +340,8 @@ public class MainActivity extends AppCompatActivity {
         for (Pair<BodyPart, BodyPart> line : bodyJoints) {
             if (
                     (person.getKeyPoints().get(line.first.ordinal()).getScore() > minConfidence) &&
-                    (person.getKeyPoints().get(line.second.ordinal()).getScore() > minConfidence)
-      ) {
+                            (person.getKeyPoints().get(line.second.ordinal()).getScore() > minConfidence)
+            ) {
                 canvas.drawLine(
                         ((float)person.getKeyPoints().get(line.first.ordinal()).getPosition().getX()) * widthRatio + left,
                         ((float)person.getKeyPoints().get(line.first.ordinal()).getPosition().getY()) * heightRatio + top,
@@ -578,6 +441,7 @@ public class MainActivity extends AppCompatActivity {
 
 
     }
+
 
 
 }
