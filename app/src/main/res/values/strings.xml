@@ -4,6 +4,6 @@
     <string name="get_keyframes">Get Keyframes</string>
     <string name="single_pose_estim">Single Image Pose Estimation</string>
     <string name="go_local">Try Local Processing</string>
-    <string name="go_server">Go Back to Main Mode</string>
+    <string name="go_server">Back to Main Mode</string>
     <string name="get_skeleton">Predict</string>
 </resources>
