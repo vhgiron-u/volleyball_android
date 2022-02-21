@@ -100,26 +100,25 @@
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="450dp">
+        android:layout_height="338dp">
+
         <ImageView
             android:id="@+id/imageView"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
+            android:layout_height="328dp"
+            android:layout_gravity="center_horizontal"
             android:layout_marginHorizontal="10dp"
             android:layout_marginVertical="20dp"
-            android:layout_gravity="center"
-            android:background="#DCDCDC">
-        </ImageView>
+            android:background="#DCDCDC"></ImageView>
     </LinearLayout>
 
     <Button
         android:layout_width="wrap_content"
-        android:layout_height="match_parent"
-        android:layout_gravity="center"
+        android:layout_height="66dp"
+        android:layout_gravity="center|center_vertical"
         android:layout_marginBottom="15dp"
         android:onClick="startKeyFramesProcess"
         android:text="@string/get_keyframes" />
-
 
 
 </LinearLayout>
