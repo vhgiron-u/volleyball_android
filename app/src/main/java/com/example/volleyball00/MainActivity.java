@@ -27,6 +27,7 @@ import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -55,6 +56,8 @@ import retrofit2.Retrofit;
 import static com.example.volleyball00.Constants.MODEL_HEIGHT;
 import static com.example.volleyball00.Constants.MODEL_WIDTH;
 
+import com.google.gson.Gson;
+
 
 public class MainActivity extends AppCompatActivity {
 
@@ -67,7 +70,10 @@ public class MainActivity extends AppCompatActivity {
         private String baseUrl = "http://127.0.0.1:6008/";
 //    private String baseUrl = "http://10.0.2.2:6008/";
 
+    private Boolean serverlessMode = false;
+    private String awsBaseUrl = baseUrl;
     private BinaryApi binApi;
+    private ServerlessApi serverlessApi;
 
     private String[] phasesFileNames = new String[NUM_KEYFRAMES];
     private int currentPhase = 0; //current phase/keyframe for the selector
@@ -118,6 +124,23 @@ public class MainActivity extends AppCompatActivity {
                 .build();
 
         binApi = retrofitbin.create(BinaryApi.class);
+
+        //levantamos el cliente "serverlessApi" para consumir APIs
+        OkHttpClient okHttpClient2 = new OkHttpClient
+                .Builder()
+                .connectTimeout(400, TimeUnit.MINUTES)
+                .readTimeout(400, TimeUnit.SECONDS)
+                .writeTimeout(400, TimeUnit.SECONDS)
+                .build();
+        Retrofit retrofitServerless = new Retrofit.Builder()
+                .baseUrl(awsBaseUrl)
+                //.baseUrl(baseUrl)
+                .client(okHttpClient2)
+                .build();
+
+        serverlessApi = retrofitServerless.create(ServerlessApi.class);
+        if (serverlessMode)
+            requestLambdaWarmUp();
 
 
         //inicializacion para estim de pose
@@ -173,18 +196,15 @@ public class MainActivity extends AppCompatActivity {
         if (!videoPath.trim().isEmpty()){
             startTimeRequest = Instant.now();
 
-            requestSplitVideo(videoPath);
+            if (serverlessMode)
+                requestLambdaSplitVideo(videoPath);
+            else
+                requestSplitVideo(videoPath);
+
         }
         else
             Log.i("tapKeyFrame","attempt to call process before selecting video");
 
-        ////parte 2: estimacion de pose
-
-        ////descomentar lo siguiente si se quiere probar solo mostrar imagen o estimacion de pose
-//        String filePath = "data/data/com.example.volleyball00/cache/image_00100.jpg";
-//        String filePath = "/storage/emulated/0/Download/volley0/imgs/fase-1__image_00171.jpeg"; //:deb:
-//        drawImageFromPath(filePath);
-//        requestSingleImage("image_00011.jpg", 0, true);
     }
 
     //Funcion onClick. Se activa al dar tap al boton "derecha".
@@ -268,14 +288,25 @@ public class MainActivity extends AppCompatActivity {
     //llamar al api de splitVideo
     //por cada imagen de fase:
     //   llamar requestSingleImage  //esto guardara la imagen orig, estimara la pose y guardara la nueva img
-    private void requestSplitVideo(String path){
-
+    private MultipartBody.Part prepareMultipartBodyRequest(String path){
         //preparamos el video para enviar
         File file = new File(path);
         RequestBody requestFile = RequestBody.create(MediaType.parse("multipart/form-data"),file);
         MultipartBody.Part body =
                 MultipartBody.Part.createFormData("video", file.getName(), requestFile);
+        return body;
+    }
 
+    private RequestBody prepareVideoBodyRequest(String path){
+        File file = new File(path);
+        RequestBody body = RequestBody.create(MediaType.parse("video/mp4"),file);
+        return body;
+    }
+
+    private void requestSplitVideo(String path){
+
+        //preparamos el video para enviarMultipartBody
+        MultipartBody.Part body = prepareMultipartBodyRequest(path);
 
         Call<ResponseBody> call = binApi.splitVideo(body);
         call.enqueue(new Callback<ResponseBody>() {
@@ -324,6 +355,58 @@ public class MainActivity extends AppCompatActivity {
                 Log.e("call", call.toString());
                 Log.e("error", t.toString());
 
+            }
+        });
+
+    }
+
+    private void requestLambdaSplitVideo(String path){
+
+        //preparamos el video para enviar
+        RequestBody body = prepareVideoBodyRequest(path);
+        File file = new File(path);
+
+        Log.i("splitvideo:","Starting request");
+        Call<ResponseBody> call = serverlessApi.splitVideo(file.getName(),body);
+        call.enqueue(new Callback<ResponseBody>() {
+            @Override
+            public void onResponse(Call<ResponseBody> call, Response<ResponseBody> response) {
+                if (response.isSuccessful()){
+                    try{
+                        String responseStr = response.body().string();
+                        Instant endTime = Instant.now();
+                        Log.i("responseStr:",responseStr);
+                        Log.i("responseStr:", "time: " + (Duration.between( startTimeRequest,endTime)));
+                        JSONObject jsonResponse = new JSONObject(responseStr);
+                        JSONArray destPathsJson = jsonResponse.getJSONObject("body")
+                                                                 .getJSONArray("destination_paths");
+                        List<String> destPaths = new ArrayList<>(destPathsJson.length());
+                        for(int i=0; i<destPathsJson.length(); i++)
+                            destPaths.add(destPathsJson.optString(i));
+                        Collections.sort(destPaths);
+                        for(String s3path : destPaths){
+                            //llamamos a la obtencion de imagen y estimacion de pose
+                            //lo hacemos desde aqui debido a que no manejo paralelismo
+                            Log.i("elem:", s3path);
+                        }
+
+                    }
+                    catch (Exception e){
+                        Log.e("splitvideo","sth failed: " + e.getMessage());
+                        Log.e("splitvideo", response.toString());
+                    }
+                }
+                else{
+                    Log.e("splitvideo","sth failed: " + response.code());
+                    Log.e("splitvideo", response.toString());
+                    Log.e("call", call.toString());
+                }
+            }
+            @Override
+            public void onFailure(Call<ResponseBody> call, Throwable t) {
+                Log.e("call", "an error ocurred during call to splitvideo:");
+                Log.e("call", call.toString());
+                Log.e("error", t.toString());
             }
         });
 
@@ -400,6 +483,36 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onFailure(Call<ResponseBody> call, Throwable t) {
 
+            }
+        });
+
+    }
+
+    private void requestLambdaWarmUp(){
+        Log.i("warmup:","Starting request");
+        Call<ResponseBody> call = serverlessApi.warmUp();
+        //Call<Object> call = serverlessApi.warmUp();
+        call.enqueue(new Callback<ResponseBody>() {
+            @Override
+            public void onResponse(Call<ResponseBody> call, Response<ResponseBody> response) {
+                if (response.isSuccessful()){
+                    //recibimos url original:
+                    Log.i("response", "llamando a warmUp");
+                    try {
+                        Log.i("response", response.body().string());
+                    }
+                    catch (Exception e){
+                        Log.e("response", e.getMessage());
+                    }
+                }
+                else{
+                    Log.e("response","sth failed while calling warmUp: " + response.code());
+                }
+            }
+
+            @Override
+            public void onFailure(Call<ResponseBody> call, Throwable t) {
+                Log.e("response","sth failed while calling warmUp: " + t.toString());
             }
         });
 
